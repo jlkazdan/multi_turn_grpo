@@ -1209,6 +1209,12 @@ class RayPPOTrainer:
                             else:
                                 retry_batch_output = self.async_rollout_manager.generate_sequences(retry_gen_batch)
                             
+                            print("Meta info keys are:")
+                            print(retry_batch.meta_info.keys())
+                            del retry_batch.batch["prompts"]
+                            if "timing" in retry_batch.meta_info:
+                                del retry_batch.meta_info["timing"] #POSSIBLY READD THIS BUT IT CAUSES MISMATCHES FOR NOW
+
                             retry_batch = retry_batch.union(retry_batch_output)
                             if self.config.trainer.balance_batch:
                                 self._balance_batch(retry_batch, metrics=metrics)
@@ -1231,7 +1237,7 @@ class RayPPOTrainer:
                             mask = retry_batch.batch["attention_mask"][0].bool()
                             print("Sample prompt:", self.tokenizer.decode(retry_batch.batch["input_ids"][0][mask], skip_special_tokens=False))
                             resp_mask = retry_batch.batch["response_mask"][0].bool()
-                            print("Sample response:", self.tokenizer.decode(retry_batch.batch["responses"][0][resp_mask], skip_special_tokens=False))
+                            # print("Sample response:", self.tokenizer.decode(retry_batch.batch["responses"][0][resp_mask], skip_special_tokens=False))
                             print("Sample reward:", reward_tensor[0].sum().item())
 
                         batch = DataProto.concat(correct_batches)
@@ -1481,7 +1487,7 @@ class RayPPOTrainer:
             # Append the retry message
             retry_message = {
                 "role": "user",
-                "content": """Your previous answer was incorrect and/or you formatted it incorrectly. Please correct your reasoning and provide a new answer. Let's think step by step and do not forget to output the final answer after "###"."""
+                "content": """Your previous answer was incorrect and/or you formatted it incorrectly. Please correct your reasoning and provide a new answer. Let's think step by step and do not forget to output the final answer after "####"."""
             }
             conversation.append(retry_message)
             
@@ -1513,7 +1519,7 @@ class RayPPOTrainer:
             revised_traces.append(revised_input_ids)
             attention_masks.append(revised_attention_mask)
         del unsuccessful_batch.batch["responses"]
-        print(f"Keys in the batch are: {unsuccessful_batch.batch.keys()}")
+        # print(f"Keys in the batch are: {unsuccessful_batch.batch.keys()}")
         # Concatenate all the revised inputs
         revised_batch_input_ids = torch.concat(revised_traces, 0)
         revised_batch_attention_masks = torch.concat(attention_masks, 0)
