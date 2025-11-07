@@ -1140,6 +1140,8 @@ class RayPPOTrainer:
 
                             batch.batch["reward_baselines"] = reward_baseline_tensor
                             del rm_scores, gen_baseline_batch, gen_baseline_output
+
+                    #WHY ARE WE REPEATING TWICE?!
                     # repeat to align with repeated responses in rollout
                     batch = batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True)
                     batch = batch.union(gen_batch_output)
@@ -1182,6 +1184,7 @@ class RayPPOTrainer:
                             #unique questions in the batch
                             uids = np.unique(batch.non_tensor_batch["uid"])
                             #positions of the unique elements
+
                             
                             positions = (uids[:, None] == batch.non_tensor_batch["uid"][None, :]) # [number of unique ids, masks identifying for each unique id]
                             positions = torch.tensor(positions, dtype=reward_tensor.dtype, device=reward_tensor.device)
@@ -1200,12 +1203,13 @@ class RayPPOTrainer:
                             if len(unsuccessful_batch) == 0:
                                 break
                             retry_batch = self._prepare_retry_batch(unsuccessful_batch)
+                            retry_gen_batch = self._get_gen_batch(retry_batch)
                             if not self.async_rollout_mode:
-                                retry_batch_output = self.actor_rollout_wg.generate_sequences(retry_batch)
+                                retry_batch_output = self.actor_rollout_wg.generate_sequences(retry_gen_batch)
                             else:
-                                retry_batch_output = self.async_rollout_manager.generate_sequences(retry_batch)
+                                retry_batch_output = self.async_rollout_manager.generate_sequences(retry_gen_batch)
                             
-                            
+                            retry_batch = retry_batch.union(retry_batch_output)
                             if self.config.trainer.balance_batch:
                                 self._balance_batch(retry_batch, metrics=metrics)
                             
@@ -1219,6 +1223,9 @@ class RayPPOTrainer:
                                 )
                             else:
                                 reward_tensor, reward_extra_infos_dict = compute_reward(batch, self.reward_fn)
+
+                            if "response_mask" not in retry_batch.batch.keys():
+                                retry_batch.batch["response_mask"] = compute_response_mask(retry_batch)
 
                             print(f"\n=== RETRY ATTEMPT {attempt} ===")
                             mask = retry_batch.batch["attention_mask"][0].bool()
@@ -1468,7 +1475,6 @@ class RayPPOTrainer:
             failed_response_text = re.sub(r'^(assistant|user|system)\s*\n*', '', failed_response_text, flags=re.IGNORECASE).strip()
             
 
-
             # Append the failed response to THIS conversation copy
             conversation.append({"content": failed_response_text, "role": "assistant"})
             
@@ -1506,8 +1512,8 @@ class RayPPOTrainer:
             
             revised_traces.append(revised_input_ids)
             attention_masks.append(revised_attention_mask)
-        print(f"Keys in the batch are: {unsuccessful_batch.batch.keys()}")
         del unsuccessful_batch.batch["responses"]
+        print(f"Keys in the batch are: {unsuccessful_batch.batch.keys()}")
         # Concatenate all the revised inputs
         revised_batch_input_ids = torch.concat(revised_traces, 0)
         revised_batch_attention_masks = torch.concat(attention_masks, 0)

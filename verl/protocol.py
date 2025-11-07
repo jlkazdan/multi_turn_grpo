@@ -115,7 +115,7 @@ def union_tensor_dict(tensor_dict1: TensorDict, tensor_dict2: TensorDict) -> Ten
             tensor_dict1[key] = tensor_dict2[key]
         else:
             assert tensor_dict1[key].equal(tensor_dict2[key]), (
-                f"{key} in tensor_dict1 and tensor_dict2 are not the same object"
+                f"{key} in tensor_dict1 and tensor_dict2 are not the same object \n the shapes are: tensor_dict1: {tensor_dict1[key].shape} \n tensor_dict2: {tensor_dict2[key].shape}\n tensor_dict1 key is: {tensor_dict1[key]} \n tensor_dict2 key is {tensor_dict2[key]}"
             )
 
     return tensor_dict1
