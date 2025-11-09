@@ -5,8 +5,8 @@ python3 -m verl.trainer.main_ppo \
     algorithm.adv_estimator=grpo \
     data.train_files=$HOME/data/gsm8k/train.parquet \
     data.val_files=$HOME/data/gsm8k/test.parquet \
-    data.train_batch_size=64 \
-    data.val_batch_size=128 \
+    data.train_batch_size=4 \
+    data.val_batch_size=8 \
     data.max_prompt_length=4096 \
     data.max_response_length=1536 \
     data.shuffle=True \
@@ -67,5 +67,5 @@ python3 -m verl.trainer.main_ppo \
     trainer.total_training_steps=200 \
     +trainer.init_global_steps=0 \
     trainer.total_epochs=10 \
-    +trainer.multi_turn=False \
+    +trainer.multi_turn=True \
     +trainer.attempts=3 
