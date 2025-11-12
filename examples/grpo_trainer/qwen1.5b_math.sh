@@ -1,5 +1,5 @@
 set -x
-export EXPERIMENT_NAME='math_original'
+export EXPERIMENT_NAME='math_original_math_model'
 
 math_train_path=$HOME/data/math/train.parquet
 math_test_path=$HOME/data/math/test.parquet
@@ -9,9 +9,9 @@ python3 -m verl.trainer.main_ppo \
     data.train_files=$math_train_path \
     data.val_files=$math_test_path \
     data.train_batch_size=64 \
-    data.val_batch_size=128 \
-    data.max_prompt_length=4096 \
-    data.max_response_length=1536 \
+    data.val_batch_size=256 \
+    data.max_prompt_length=3000 \
+    data.max_response_length=1000 \
     data.shuffle=True \
     +data.val_shuffle=True \
     +data.resampling_func=1 \
@@ -21,7 +21,7 @@ python3 -m verl.trainer.main_ppo \
     +data.data_path=zero_reward_traces/zero_reward.pkl\
     data.return_raw_chat=False \
     actor_rollout_ref.actor.ppo_epochs=1 \
-    actor_rollout_ref.model.path=Qwen/Qwen2-1.5B-Instruct \
+    actor_rollout_ref.model.path=Qwen/Qwen2-Math-1.5B \
     actor_rollout_ref.actor.optim.lr=5e-6 \
     actor_rollout_ref.actor.optim.lr_warmup_steps_ratio=0.03 \
     actor_rollout_ref.actor.grad_clip=1.0 \
@@ -30,7 +30,7 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.actor.ppo_mini_batch_size=256 \
     actor_rollout_ref.actor.ppo_micro_batch_size=32 \
     actor_rollout_ref.actor.use_dynamic_bsz=True \
-    actor_rollout_ref.actor.ppo_max_token_len_per_gpu=6000 \
+    actor_rollout_ref.actor.ppo_max_token_len_per_gpu=4000 \
     actor_rollout_ref.actor.use_kl_loss=True \
     actor_rollout_ref.actor.kl_loss_coef=0.001 \
     actor_rollout_ref.actor.entropy_coeff=0.0 \
@@ -60,11 +60,11 @@ python3 -m verl.trainer.main_ppo \
     trainer.logger=[console,wandb] \
     trainer.project_name='TEST' \
     trainer.experiment_name=$EXPERIMENT_NAME \
-    trainer.val_before_train=False \
+    trainer.val_before_train=True \
     +trainer.disable_actor_update=False \
     trainer.n_gpus_per_node=4 \
     trainer.nnodes=1 \
-    trainer.save_freq=10 \
+    trainer.save_freq=50 \
     trainer.test_freq=10 \
     trainer.default_hdfs_dir=null \
     trainer.total_training_steps=200 \
