@@ -1168,8 +1168,8 @@ class RayPPOTrainer:
                             )
                         else:
                             reward_tensor, reward_extra_infos_dict = compute_reward(batch, self.reward_fn)
-
-                    print(f"The rewards before re-try are: {reward_tensor.sum()}")
+                    pre_retry_rewards = reward_tensor.sum()
+                    print(f"The rewards before re-try are: {pre_retry_rewards}")
                     if self.config.trainer.get("multi_turn", False):
                         print('USING MULTITURN')
                         # list of correct batches so that we can merge at the end
@@ -1217,34 +1217,39 @@ class RayPPOTrainer:
                             if self.config.trainer.balance_batch:
                                 self._balance_batch(retry_batch, metrics=metrics)
                             
+
                             # get rewards for the new bacth
-                            if self.use_rm and "rm_scores" not in batch.batch.keys():
-                                reward_tensor = self.rm_wg.compute_rm_score(batch)
-                                batch = retry_batch.union(reward_tensor)
+                            if self.use_rm and "rm_scores" not in retry_batch.batch.keys():
+                                reward_tensor = self.rm_wg.compute_rm_score(retry_batch)
+                                retry_batch = retry_batch.union(reward_tensor)
                             if self.config.reward_model.launch_reward_fn_async:
                                 future_reward = compute_reward_async.remote(
                                     data=retry_batch, config=self.config, tokenizer=self.tokenizer
                                 )
                             else:
                                 reward_tensor, reward_extra_infos_dict = compute_reward(retry_batch, self.reward_fn)
+                            
+                            # retry_batch.batch["token_level_scr"] = reward_tensor
+                            # reward_extra_effort_infos_dicts.append(reward_extra_infos_dict)
+                            # print(f"The reward dict is: {reward_extra_effort_infos_dicts}")
 
                             if "response_mask" not in retry_batch.batch.keys():
                                 retry_batch.batch["response_mask"] = compute_response_mask(retry_batch)
 
                             print(f"\n=== RETRY ATTEMPT {attempt} ===")
-                            print(f"Reward_tensor is: {reward_tensor.sum()}")
-                            # mask = retry_batch.batch["attention_mask"][0].bool()
-                            # print("Sample prompt:", self.tokenizer.decode(retry_batch.batch["input_ids"][0][mask], skip_special_tokens=False))
-                            # resp_mask = retry_batch.batch["response_mask"][0].bool()
-                            # # print("Sample response:", self.tokenizer.decode(retry_batch.batch["responses"][0][resp_mask], skip_special_tokens=False))
-                            # print("Sample reward:", reward_tensor[0].sum().item())
+                            # print(f"Reward_tensor is: {reward_tensor.sum()}")
+                            mask = retry_batch.batch["attention_mask"][0].bool()
+                            print("Sample prompt:", self.tokenizer.decode(retry_batch.batch["input_ids"][0][mask], skip_special_tokens=False))
+                            resp_mask = retry_batch.batch["response_mask"][0].bool()
+                            print("Sample response:", self.tokenizer.decode(retry_batch.batch["responses"][0][resp_mask], skip_special_tokens=False))
+                            print("Sample reward:", reward_tensor[0].sum().item())
                             
                         batch = DataProto.concat(correct_batches)
                         for i in range(len(batch)):
                             mask = batch.batch["attention_mask"][i].bool()
                             decoded = self.tokenizer.decode(batch.batch["input_ids"][i][mask], skip_special_tokens=False)
                             if "Your previous answer was incorrect" in decoded:
-                                print("Sample prompt:", decoded)
+                                print("Corrected answer successfully")
 
                         if self.use_rm and "rm_scores" not in batch.batch.keys():
                             reward_tensor = self.rm_wg.compute_rm_score(batch)
@@ -1255,7 +1260,9 @@ class RayPPOTrainer:
                             )
                         else:
                             reward_tensor, reward_extra_infos_dict = compute_reward(batch, self.reward_fn)
-                        print(f"The rewards after re-try are: {reward_tensor.sum()}")
+                        post_retry_rewards = reward_tensor.sum()
+                        print(f"The rewards after re-try are: {post_retry_rewards}")
+                        print(f"The reward difference is: {post_retry_rewards - pre_retry_rewards}")
                         # recompute the rewards to save trouble -> not the most efficient in general
 
 
@@ -1492,7 +1499,7 @@ class RayPPOTrainer:
             # Append the retry message
             retry_message = {
                 "role": "user",
-                "content": """Your previous answer was incorrect and/or you formatted it incorrectly. Please correct your reasoning and provide a new answer. Let's think step by step and do not forget to output the final answer after ####."""
+                "content": """Your previous answer was incorrect and/or you formatted it incorrectly. First, find your reasoning error and/or formatting error and explain why your answer was incorrect.  Please correct your reasoning and provide a new answer. Let's think step by step and do not forget to output the final answer inside \boxed{}."""
             }
             conversation.append(retry_message)
             
@@ -1514,13 +1521,16 @@ class RayPPOTrainer:
             
 
             # Postprocess
-            revised_input_ids, revised_attention_mask = verl_F.postprocess_data(
-                input_ids=revised_input_ids,
-                attention_mask=revised_attention_mask,
-                max_length=self.config.data.max_prompt_length,
-                pad_token_id=self.tokenizer.pad_token_id,
-                left_pad=True,
-            )
+            try:
+                revised_input_ids, revised_attention_mask = verl_F.postprocess_data(
+                    input_ids=revised_input_ids,
+                    attention_mask=revised_attention_mask,
+                    max_length=self.config.data.max_prompt_length,
+                    pad_token_id=self.tokenizer.pad_token_id,
+                    left_pad=True,
+                )
+            except:
+                print("The too-long response is:", self.tokenizer.decode(revised_input_ids[0][revised_attention_mask[0].bool()], skip_special_tokens=True))
             
             revised_traces.append(revised_input_ids)
             attention_masks.append(revised_attention_mask)
