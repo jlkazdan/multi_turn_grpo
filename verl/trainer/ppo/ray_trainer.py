@@ -36,6 +36,7 @@ from torch.utils.data import Dataset, Sampler
 from torchdata.stateful_dataloader import StatefulDataLoader
 from tqdm import tqdm
 import re
+import wandb
 
 from verl import DataProto
 from verl.experimental.dataset.sampler import AbstractCurriculumSampler
@@ -1241,8 +1242,8 @@ class RayPPOTrainer:
                             mask = retry_batch.batch["attention_mask"][0].bool()
                             print("Sample prompt:", self.tokenizer.decode(retry_batch.batch["input_ids"][0][mask], skip_special_tokens=False))
                             resp_mask = retry_batch.batch["response_mask"][0].bool()
-                            print("Sample response:", self.tokenizer.decode(retry_batch.batch["responses"][0][resp_mask], skip_special_tokens=False))
-                            print("Sample reward:", reward_tensor[0].sum().item())
+                            # print("Sample response:", self.tokenizer.decode(retry_batch.batch["responses"][0][resp_mask], skip_special_tokens=False))
+                            # print("Sample reward:", reward_tensor[0].sum().item())
                             
                         batch = DataProto.concat(correct_batches)
                         for i in range(len(batch)):
@@ -1263,6 +1264,7 @@ class RayPPOTrainer:
                         post_retry_rewards = reward_tensor.sum()
                         print(f"The rewards after re-try are: {post_retry_rewards}")
                         print(f"The reward difference is: {post_retry_rewards - pre_retry_rewards}")
+                        wandb.log({'reward_difference': post_retry_rewards - pre_retry_rewards})
                         # recompute the rewards to save trouble -> not the most efficient in general
 
 
