@@ -1,5 +1,5 @@
 set -x
-export EXPERIMENT_NAME='math_original_math_model'
+export EXPERIMENT_NAME='math_multi_turn_math_instruct_model_teacher_gpt20b'
 
 math_train_path=$HOME/data/math/train.parquet
 math_test_path=$HOME/data/math/test.parquet
@@ -21,7 +21,7 @@ python3 -m verl.trainer.main_ppo \
     +data.data_path=zero_reward_traces/zero_reward.pkl\
     data.return_raw_chat=False \
     actor_rollout_ref.actor.ppo_epochs=1 \
-    actor_rollout_ref.model.path=Qwen/Qwen2-Math-1.5B \
+    actor_rollout_ref.model.path=Qwen/Qwen2.5-1.5B-Instruct \
     actor_rollout_ref.actor.optim.lr=5e-6 \
     actor_rollout_ref.actor.optim.lr_warmup_steps_ratio=0.03 \
     actor_rollout_ref.actor.grad_clip=1.0 \
@@ -70,5 +70,6 @@ python3 -m verl.trainer.main_ppo \
     trainer.total_training_steps=200 \
     +trainer.init_global_steps=0 \
     trainer.total_epochs=10 \
-    +trainer.multi_turn=False \
-    +trainer.attempts=3
+    +trainer.multi_turn=True \
+    +trainer.attempts=1 \
+    +trainer.teacher_model=True
