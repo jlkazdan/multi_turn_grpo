@@ -27,6 +27,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from pprint import pprint
 from typing import Optional
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import ray
@@ -37,6 +38,7 @@ from torchdata.stateful_dataloader import StatefulDataLoader
 from tqdm import tqdm
 import re
 import wandb
+from verl.trainer.ppo.call_external_model import process_single_retry_item
 
 from verl import DataProto
 from verl.experimental.dataset.sampler import AbstractCurriculumSampler
@@ -1178,7 +1180,7 @@ class RayPPOTrainer:
                         reward_extra_effort_infos_dicts = []
                         retry_batch = batch
                         for attempt in range(self.config.trainer.attempts):
-
+                            
                             #TODO: filter out the questions with 0 rewards
                             #first get the questions that have 0 correct responses.  This requires grouping by the uid
                             #unique questions in the batch
@@ -1192,14 +1194,27 @@ class RayPPOTrainer:
                             reward_sums = (positions @ reward_tensor.sum(-1))
                             keep_mask = torch.tensor(reward_sums!=0, dtype = reward_tensor.dtype, device=reward_tensor.device).unsqueeze(-1) * positions
                             keep_mask = keep_mask.sum(0)
+                            # get rewards for the new batch
+                            #get rid of everything to avoid update issues
+                            if "rm_scores" in batch.batch:
+                                del batch.batch["rm_scores"]
+                                del reward_tensor
+                            if "token_level_scores" in batch.batch:
+                                del batch.batch["token_level_scores"]
+                            if "token_level_rewards" in batch.batch:
+                                del batch.batch["token_level_rewards"]
+                            if "rm_scores" in batch.batch:
+                                del batch.batch["rm_scores"]
                             
                             unsuccessful = keep_mask.logical_not()
                             unsuccessful_batch = retry_batch.select_idxs(unsuccessful)
-                            
+                            print(f"The number unsolved is: {unsuccessful.sum()}")
+                            rewards_in_unsuccessful_batch_initial = reward_tensor[unsuccessful, ...].sum()
                             # reassign the batch: we will merge later
                             successful_batch = retry_batch.select_idxs(~unsuccessful)
                             del successful_batch.non_tensor_batch["text_prompt"]
                             correct_batches.append(successful_batch)
+                            print(f"The length of the corrected problems is: {len(successful_batch)}")
                             
                             if len(unsuccessful_batch) == 0:
                                 break
@@ -1209,17 +1224,20 @@ class RayPPOTrainer:
                                 retry_batch_output = self.actor_rollout_wg.generate_sequences(retry_gen_batch)
                             else:
                                 retry_batch_output = self.async_rollout_manager.generate_sequences(retry_gen_batch)
-                            
-                            del retry_batch.batch["prompts"]
+
                             if "timing" in retry_batch.meta_info:
                                 del retry_batch.meta_info["timing"] #POSSIBLY READD THIS BUT IT CAUSES MISMATCHES FOR NOW
-
+                            if "prompts" in retry_batch.batch:
+                                del retry_batch.batch["prompts"]
                             retry_batch = retry_batch.union(retry_batch_output)
                             if self.config.trainer.balance_batch:
                                 self._balance_batch(retry_batch, metrics=metrics)
                             
+                            print("RETRYING REWARDS")
+                            print("#"*1000)
 
-                            # get rewards for the new bacth
+
+
                             if self.use_rm and "rm_scores" not in retry_batch.batch.keys():
                                 reward_tensor = self.rm_wg.compute_rm_score(retry_batch)
                                 retry_batch = retry_batch.union(reward_tensor)
@@ -1229,7 +1247,9 @@ class RayPPOTrainer:
                                 )
                             else:
                                 reward_tensor, reward_extra_infos_dict = compute_reward(retry_batch, self.reward_fn)
-                            
+                                print(f"The original reward was: {pre_retry_rewards}")
+                                print(f"The reward on the retry batch before retry is:{rewards_in_unsuccessful_batch_initial}")
+                                print(f"The reward on the retry bathc after retry is: {reward_tensor.sum()}")
                             # retry_batch.batch["token_level_scr"] = reward_tensor
                             # reward_extra_effort_infos_dicts.append(reward_extra_infos_dict)
                             # print(f"The reward dict is: {reward_extra_effort_infos_dicts}")
@@ -1241,11 +1261,43 @@ class RayPPOTrainer:
                             # print(f"Reward_tensor is: {reward_tensor.sum()}")
                             mask = retry_batch.batch["attention_mask"][0].bool()
                             print("Sample prompt:", self.tokenizer.decode(retry_batch.batch["input_ids"][0][mask], skip_special_tokens=False))
+                            with open("retry_prompt.txt", "a") as f:
+                                f.write(f"=== RETRY ATTEMPT {attempt} ===\n")
+                                f.write(f"Sample prompt: {self.tokenizer.decode(retry_batch.batch['input_ids'][0][mask], skip_special_tokens=False)}\n")
                             resp_mask = retry_batch.batch["response_mask"][0].bool()
-                            # print("Sample response:", self.tokenizer.decode(retry_batch.batch["responses"][0][resp_mask], skip_special_tokens=False))
-                            # print("Sample reward:", reward_tensor[0].sum().item())
-                            
+                            print("Sample response:", self.tokenizer.decode(retry_batch.batch["responses"][0][resp_mask], skip_special_tokens=False))
+                            print("Sample reward:", reward_tensor[0].sum().item())
+                        
+                        #reselect the corrected batches one more time
+                        #TODO: filter out the questions with 0 rewards
+                        #first get the questions that have 0 correct responses.  This requires grouping by the uid
+                        #unique questions in the batch
+                        uids = np.unique(retry_batch.non_tensor_batch["uid"])
+                        #positions of the unique elements
+
+                        
+                        positions = (uids[:, None] == retry_batch.non_tensor_batch["uid"][None, :]) # [number of unique ids, masks identifying for each unique id]
+                        positions = torch.tensor(positions, dtype=reward_tensor.dtype, device=reward_tensor.device)
+                        #reward sums
+                        reward_sums = (positions @ reward_tensor.sum(-1))
+                        keep_mask = torch.tensor(reward_sums!=0, dtype = reward_tensor.dtype, device=reward_tensor.device).unsqueeze(-1) * positions
+                        keep_mask = keep_mask.sum(0)
+                        
+                        unsuccessful = keep_mask.logical_not()
+                        unsuccessful_batch = retry_batch.select_idxs(unsuccessful)
+                        print(f"The number unsolved is: {unsuccessful.sum()}")
+                        rewards_in_unsuccessful_batch_initial = reward_tensor[unsuccessful, ...].sum()
+                        # reassign the batch: we will merge later
+                        successful_batch = retry_batch.select_idxs(~unsuccessful)
+
+                        if "text_prompt" in successful_batch.non_tensor_batch:
+                            del successful_batch.non_tensor_batch["text_prompt"]
+                        correct_batches.append(successful_batch)
+                        
+
+                        #######
                         batch = DataProto.concat(correct_batches)
+                        print(f"The total number of successfully corrected problems is: {len(batch)}")
                         for i in range(len(batch)):
                             mask = batch.batch["attention_mask"][i].bool()
                             decoded = self.tokenizer.decode(batch.batch["input_ids"][i][mask], skip_special_tokens=False)
@@ -1253,13 +1305,16 @@ class RayPPOTrainer:
                                 print("Corrected answer successfully")
 
                         if self.use_rm and "rm_scores" not in batch.batch.keys():
+                            print("recomputing rm scores with use_rm")
                             reward_tensor = self.rm_wg.compute_rm_score(batch)
                             batch = batch.union(reward_tensor)
                         if self.config.reward_model.launch_reward_fn_async:
+                            print("recomputing rm scores with async")
                             future_reward = compute_reward_async.remote(
                                 data=batch, config=self.config, tokenizer=self.tokenizer
                             )
                         else:
+                            print("recomputing rm scores normally")
                             reward_tensor, reward_extra_infos_dict = compute_reward(batch, self.reward_fn)
                         post_retry_rewards = reward_tensor.sum()
                         print(f"The rewards after re-try are: {post_retry_rewards}")
@@ -1462,112 +1517,49 @@ class RayPPOTrainer:
                 if hasattr(self.train_dataset, "on_batch_end"):
                     # The dataset may be changed after each training batch
                     self.train_dataset.on_batch_end(batch=batch)
-        
+
     def _prepare_retry_batch(self, unsuccessful_batch: DataProto) -> DataProto:
         if len(unsuccessful_batch) == 0:
             return unsuccessful_batch
-        
+
         batch_size = len(unsuccessful_batch)
         revised_traces = []
         attention_masks = []
-        
-        # Create a new list to store independent conversation copies
         new_text_prompts = []
-        
-        for i in range(batch_size):
-            # Get the conversation - it might be a numpy array or a list
-            text_prompt_item = unsuccessful_batch.non_tensor_batch["text_prompt"][i]
-            
-            # Convert to list if it's a numpy array, then deep copy
-            if isinstance(text_prompt_item, np.ndarray):
-                conversation = copy.deepcopy(text_prompt_item.tolist())
-            else:
-                conversation = copy.deepcopy(text_prompt_item)
-            
-            # Get the failed response for THIS specific trace
-            failed_response_ids = unsuccessful_batch.batch["responses"][i]
-            failed_response_mask = unsuccessful_batch.batch["response_mask"][i]
-            
-            # Decode the failed response
-            valid_response_mask = failed_response_mask.bool()
-            valid_response_ids = failed_response_ids[valid_response_mask]
-            failed_response_text = self.tokenizer.decode(valid_response_ids, skip_special_tokens=True)
-            failed_response_text = re.sub(r'^(assistant|user|system)\s*\n*', '', failed_response_text, flags=re.IGNORECASE).strip()
+
+        # --- run the loop concurrently in threads ---
+        ground_truths = [
+            item.non_tensor_batch.get("reward_model", {}).get("ground_truth", None) for item in unsuccessful_batch
+        ]
+        inputs = [(i, unsuccessful_batch, self.tokenizer, ground_truths[i], self.config) for i in range(len(unsuccessful_batch))]
+        with ThreadPoolExecutor() as executor:
+            results = list(executor.map(lambda args: process_single_retry_item(*args), inputs))
             
 
-            # Append the failed response to THIS conversation copy
-            conversation.append({"content": failed_response_text, "role": "assistant"})
-            
-            # Append the retry message
-            retry_message = {
-                "role": "user",
-                "content": """Your previous answer was incorrect and/or you formatted it incorrectly. First, find your reasoning error and/or formatting error and explain why your answer was incorrect.  Please correct your reasoning and provide a new answer. Let's think step by step and do not forget to output the final answer inside \boxed{}."""
-            }
-            conversation.append(retry_message)
-            
-            # Store this modified conversation
+        # Unpack results in order
+        for i, conversation, revised_input_ids, revised_attention_mask in results:
             new_text_prompts.append(conversation)
-            
-            # Apply chat template to this conversation
-            retry_message_in_template = self.tokenizer.apply_chat_template(
-                conversation,
-                add_generation_prompt=True,
-                tokenize=False,
-                **self.config.data.get("apply_chat_template_kwargs", {})
-            )
-            
-            # Tokenize
-            revised_trace = self.tokenizer(retry_message_in_template, return_tensors="pt", add_special_tokens=False)
-            revised_attention_mask = revised_trace.pop("attention_mask")
-            revised_input_ids = revised_trace.pop("input_ids")
-            
-
-            # Postprocess
-            try:
-                revised_input_ids, revised_attention_mask = verl_F.postprocess_data(
-                    input_ids=revised_input_ids,
-                    attention_mask=revised_attention_mask,
-                    max_length=self.config.data.max_prompt_length,
-                    pad_token_id=self.tokenizer.pad_token_id,
-                    left_pad=True,
-                )
-            except:
-                print("The too-long response is:", self.tokenizer.decode(revised_input_ids[0][revised_attention_mask[0].bool()], skip_special_tokens=True))
-            
             revised_traces.append(revised_input_ids)
             attention_masks.append(revised_attention_mask)
+
         del unsuccessful_batch.batch["responses"]
-        # print(f"Keys in the batch are: {unsuccessful_batch.batch.keys()}")
+
         # Concatenate all the revised inputs
         revised_batch_input_ids = torch.concat(revised_traces, 0)
         revised_batch_attention_masks = torch.concat(attention_masks, 0)
-        revised_batch_position_ids = compute_position_id_with_mask(revised_batch_attention_masks)
-        
+        revised_batch_position_ids = compute_position_id_with_mask(
+            revised_batch_attention_masks
+        )
+
         # Update the batch with new tokenized inputs
-        unsuccessful_batch.batch['input_ids'] = revised_batch_input_ids
-        unsuccessful_batch.batch['attention_mask'] = revised_batch_attention_masks
-        unsuccessful_batch.batch['position_ids'] = revised_batch_position_ids
-        
-        # **CRITICAL: Replace text_prompt with independent copies**
-        unsuccessful_batch.non_tensor_batch['text_prompt'] = np.array(new_text_prompts, dtype=object)
-        
+        unsuccessful_batch.batch["input_ids"] = revised_batch_input_ids
+        unsuccessful_batch.batch["attention_mask"] = revised_batch_attention_masks
+        unsuccessful_batch.batch["position_ids"] = revised_batch_position_ids
+
+        # Replace text_prompt with independent copies
+        unsuccessful_batch.non_tensor_batch["text_prompt"] = np.array(
+            new_text_prompts,
+            dtype=object,
+        )
+
         return unsuccessful_batch
-
-
-
-
-
-                
-
-
-                
-
-                
-
-                
-                
-
-
-
-                
-
